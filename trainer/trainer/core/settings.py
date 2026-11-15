@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     app_profile: str = "fixture"
     raw_data_dir: Path = Path("../data/raw")
     fixture_data_dir: Path = Path("../data/fixture")
+    smart_meter_data_dir: Path = Path("../data/artifacts/datasets/smart-meters")
     artifacts_dir: Path = Path("../data/artifacts")
     synthetic_dataset_households: int = 96
     synthetic_dataset_days: int = 365

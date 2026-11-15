@@ -138,6 +138,29 @@ def test_admin_can_queue_cer_dataset_import(client):
     assert payload["sample_households"] == 8
 
 
+def test_admin_can_queue_smart_meter_dataset_import(client):
+    login = client.post("/auth/login", json={"email": "admin@demo.local", "password": "Admin123!"})
+    token = login.json()["access_token"]
+
+    response = client.post(
+        "/admin/datasets/import",
+        json={
+            "source_type": "smart-meters",
+            "profile": "smart-meters",
+            "dataset_path": "/workspace/data/artifacts/datasets/smart-meters",
+            "sample_households": 16,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["payload"]
+    assert payload["source_type"] == "smart-meters"
+    assert payload["profile"] == "smart-meters"
+    assert payload["dataset_path"] == "/workspace/data/artifacts/datasets/smart-meters"
+    assert payload["sample_households"] == 16
+
+
 def test_dataset_import_rejects_invalid_source_profile_pair(client):
     login = client.post("/auth/login", json={"email": "admin@demo.local", "password": "Admin123!"})
     token = login.json()["access_token"]
@@ -152,3 +175,14 @@ def test_dataset_import_rejects_invalid_source_profile_pair(client):
     )
 
     assert response.status_code == 422
+
+    smart_meter_response = client.post(
+        "/admin/datasets/import",
+        json={
+            "source_type": "smart-meters",
+            "profile": "cer-dev",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert smart_meter_response.status_code == 422

@@ -42,9 +42,43 @@ FEATURE_COLUMNS = [
     "is_holiday",
 ]
 TARGET_COLUMN = "consumption_kwh"
-DEVICE = torch.device("cpu")
-torch.set_num_threads(int(os.getenv("TRAINER_TORCH_THREADS", "1")))
-torch.set_num_interop_threads(1)
+
+
+def resolve_training_device() -> torch.device:
+    requested = os.getenv("TRAINER_DEVICE", "auto").strip().lower()
+    if requested == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if requested == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("TRAINER_DEVICE=cuda was requested, but CUDA is not available in the trainer runtime")
+        return torch.device("cuda")
+    if requested == "cpu":
+        return torch.device("cpu")
+    raise ValueError("TRAINER_DEVICE must be one of: auto, cpu, cuda")
+
+
+def _device_metadata(device: torch.device) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "requested_device": os.getenv("TRAINER_DEVICE", "auto"),
+        "device_type": device.type,
+        "cuda_available": bool(torch.cuda.is_available()),
+        "cuda_version": torch.version.cuda,
+    }
+    if device.type == "cuda" and torch.cuda.is_available():
+        metadata["cuda_device_count"] = int(torch.cuda.device_count())
+        metadata["cuda_device_name"] = torch.cuda.get_device_name(device)
+    else:
+        metadata["cuda_device_count"] = int(torch.cuda.device_count())
+    return metadata
+
+
+DEVICE = resolve_training_device()
+DEVICE_METADATA = _device_metadata(DEVICE)
+if DEVICE.type == "cpu":
+    torch.set_num_threads(int(os.getenv("TRAINER_TORCH_THREADS", "1")))
+    torch.set_num_interop_threads(1)
+elif torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True
 
 
 class TrainingCancelled(RuntimeError):
@@ -67,7 +101,7 @@ class ClientPartition:
     metadata: dict[str, Any]
 
 
-def _merge_weather(frame: pd.DataFrame, weather_path: Path | None) -> pd.DataFrame:
+def _merge_weather(frame: pd.DataFrame, weather_path: Path | None, *, holiday_country: str = "IE") -> pd.DataFrame:
     if weather_path and weather_path.exists():
         weather = pd.read_csv(weather_path)
         weather["timestamp"] = pd.to_datetime(weather["timestamp"], utc=True)
@@ -80,7 +114,7 @@ def _merge_weather(frame: pd.DataFrame, weather_path: Path | None) -> pd.DataFra
         if column not in merged:
             merged[column] = 0.0
         merged[column] = merged[column].interpolate(limit_direction="both").fillna(0.0)
-    return add_time_features(merged)
+    return add_time_features(merged, holiday_country=holiday_country)
 
 
 def prepare_client_partitions(*, artifact_root: Path, household_rows: list[dict[str, Any]], selected_household_ids: list[int] | None = None) -> list[ClientPartition]:
@@ -96,7 +130,8 @@ def prepare_client_partitions(*, artifact_root: Path, household_rows: list[dict[
             continue
         frame = pd.read_csv(household_path)
         weather_path = weather_dir / f"{household.get('region_code') or 'IRELAND'}.csv"
-        merged = _merge_weather(frame, weather_path if weather_path.exists() else None)
+        holiday_country = (household.get("metadata_json") or {}).get("holiday_country") or "IE"
+        merged = _merge_weather(frame, weather_path if weather_path.exists() else None, holiday_country=holiday_country)
         prepared_frames.append((household, merged))
 
     if not prepared_frames:
@@ -152,7 +187,7 @@ def prepare_client_partitions(*, artifact_root: Path, household_rows: list[dict[
 
 
 def _evaluate_global(parameters: list[np.ndarray], partitions: list[ClientPartition], batch_size: int) -> tuple[float, dict[str, float]]:
-    model = MultiOutputLSTM(input_size=len(FEATURE_COLUMNS))
+    model = MultiOutputLSTM(input_size=len(FEATURE_COLUMNS)).to(DEVICE)
     ndarrays_to_state_dict(model, parameters)
     metrics: list[MetricBundle] = []
     for partition in partitions:
@@ -170,7 +205,7 @@ def _evaluate_global(parameters: list[np.ndarray], partitions: list[ClientPartit
 
 
 def _evaluate_test(parameters: list[np.ndarray], partitions: list[ClientPartition], batch_size: int) -> dict[str, float]:
-    model = MultiOutputLSTM(input_size=len(FEATURE_COLUMNS))
+    model = MultiOutputLSTM(input_size=len(FEATURE_COLUMNS)).to(DEVICE)
     ndarrays_to_state_dict(model, parameters)
     rows: list[MetricBundle] = []
     for partition in partitions:
@@ -187,27 +222,84 @@ def _evaluate_test(parameters: list[np.ndarray], partitions: list[ClientPartitio
     }
 
 
-def run_centralized_baseline(partitions: list[ClientPartition], config: dict[str, Any]) -> dict[str, float]:
-    train_X = np.concatenate([partition.train_X for partition in partitions if len(partition.train_X)], axis=0)
-    train_y = np.concatenate([partition.train_y for partition in partitions if len(partition.train_y)], axis=0)
-    val_X = np.concatenate([partition.val_X for partition in partitions if len(partition.val_X)], axis=0)
-    val_y = np.concatenate([partition.val_y for partition in partitions if len(partition.val_y)], axis=0)
-    test_X = np.concatenate([partition.test_X for partition in partitions if len(partition.test_X)], axis=0)
-    test_y = np.concatenate([partition.test_y for partition in partitions if len(partition.test_y)], axis=0)
+def _evaluate_centralized_partition_set(
+    model: torch.nn.Module,
+    partitions: list[ClientPartition],
+    *,
+    split: str,
+    batch_size: int,
+) -> MetricBundle:
+    criterion = torch.nn.MSELoss()
+    abs_error_sum = 0.0
+    sq_error_sum = 0.0
+    abs_pct_sum = 0.0
+    loss_sum = 0.0
+    element_count = 0
 
-    model = MultiOutputLSTM(input_size=len(FEATURE_COLUMNS))
+    model.eval()
+    with torch.no_grad():
+        for partition in partitions:
+            features = getattr(partition, f"{split}_X")
+            targets = getattr(partition, f"{split}_y")
+            if len(features) == 0:
+                continue
+            mean = partition.scaler_mean
+            std = partition.scaler_std
+            loader = dataset_loader(features, targets, batch_size, shuffle=False)
+            for batch_features, batch_targets in loader:
+                batch_features = batch_features.to(DEVICE)
+                batch_targets = batch_targets.to(DEVICE)
+                outputs = model(batch_features)
+                batch_loss = criterion(outputs, batch_targets)
+
+                pred_actual = (outputs.detach().cpu().numpy() * std) + mean
+                truth_actual = (batch_targets.detach().cpu().numpy() * std) + mean
+                error = pred_actual - truth_actual
+                denom = np.clip(np.abs(truth_actual), 1e-3, None)
+                count = int(error.size)
+
+                abs_error_sum += float(np.abs(error).sum())
+                sq_error_sum += float((error ** 2).sum())
+                abs_pct_sum += float((np.abs(error) / denom).sum())
+                loss_sum += float(batch_loss.item()) * count
+                element_count += count
+
+    if element_count == 0:
+        return MetricBundle(mae=0.0, rmse=0.0, mape=0.0, loss=0.0)
+
+    return MetricBundle(
+        mae=abs_error_sum / element_count,
+        rmse=float(np.sqrt(sq_error_sum / element_count)),
+        mape=(abs_pct_sum / element_count) * 100.0,
+        loss=loss_sum / element_count,
+    )
+
+
+def run_centralized_baseline(partitions: list[ClientPartition], config: dict[str, Any]) -> dict[str, float]:
+    model = MultiOutputLSTM(input_size=len(FEATURE_COLUMNS)).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config["learning_rate"]))
     criterion = torch.nn.MSELoss()
-    train_loader = dataset_loader(train_X, train_y, int(config["batch_size"]), shuffle=True)
-    val_loader = dataset_loader(val_X, val_y, int(config["batch_size"]), shuffle=False)
-    target_scale = (partitions[0].scaler_mean, partitions[0].scaler_std)
+    batch_size = int(config["batch_size"])
     best_metrics = {"mae": float("inf"), "rmse": float("inf"), "mape": float("inf")}
     for _ in range(max(4, int(config["local_epochs"]) * 4)):
-        train_epoch(model, train_loader, optimizer, criterion, DEVICE)
-        metrics = evaluate_model(model, val_loader, target_scale, DEVICE)
+        for partition in partitions:
+            if len(partition.train_X) == 0:
+                continue
+            train_loader = dataset_loader(partition.train_X, partition.train_y, batch_size, shuffle=True)
+            train_epoch(model, train_loader, optimizer, criterion, DEVICE)
+        metrics = _evaluate_centralized_partition_set(
+            model,
+            partitions,
+            split="val",
+            batch_size=batch_size,
+        )
         if metrics.mae < best_metrics["mae"]:
-            test_loader = dataset_loader(test_X, test_y, int(config["batch_size"]), shuffle=False)
-            test_metrics = evaluate_model(model, test_loader, target_scale, DEVICE)
+            test_metrics = _evaluate_centralized_partition_set(
+                model,
+                partitions,
+                split="test",
+                batch_size=batch_size,
+            )
             best_metrics = {"mae": test_metrics.mae, "rmse": test_metrics.rmse, "mape": test_metrics.mape}
     return best_metrics
 
@@ -291,7 +383,7 @@ def _train_local_partition(
     global_parameters: list[np.ndarray],
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    model = MultiOutputLSTM(input_size=len(FEATURE_COLUMNS))
+    model = MultiOutputLSTM(input_size=len(FEATURE_COLUMNS)).to(DEVICE)
     ndarrays_to_state_dict(model, global_parameters)
     loader = dataset_loader(partition.train_X, partition.train_y, int(config["batch_size"]), shuffle=True)
     optimizer = torch.optim.Adam(
@@ -349,6 +441,15 @@ def run_federated_training(
     secure_aggregation_mask_scale = float(config.get("secure_aggregation_mask_scale", 4.0))
     secure_aggregation_nonce = secrets.token_bytes(16)
     secure_aggregation_round_summaries: list[dict[str, Any]] = []
+
+    if progress_callback:
+        progress_callback(
+            "Training device: {device} (cuda_available={cuda_available}, requested={requested})".format(
+                device=DEVICE_METADATA["device_type"],
+                cuda_available=DEVICE_METADATA["cuda_available"],
+                requested=DEVICE_METADATA["requested_device"],
+            )
+        )
 
     for round_number in range(1, rounds + 1):
         if should_abort and should_abort():
@@ -468,6 +569,7 @@ def run_federated_training(
         "partition_count": len(partitions),
         "target_mean": partitions[0].scaler_mean,
         "target_scale": partitions[0].scaler_std,
+        "device": DEVICE_METADATA,
         "round_metrics": round_rows,
         "best_validation_mae": best_val_mae,
         "security_summary": {
@@ -495,6 +597,7 @@ def run_federated_training(
             "fl_metrics": test_metrics,
             "centralized_metrics": baseline_metrics,
             "accuracy_gap_mae": round(test_metrics["mae"] - baseline_metrics["mae"], 5),
+            "device": DEVICE_METADATA,
             "history_summary": {
                 "best_validation_mae": best_val_mae,
                 "round_count": rounds,

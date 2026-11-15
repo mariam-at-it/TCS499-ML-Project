@@ -202,6 +202,8 @@ class PipelineService:
                 overwrite=reset_existing,
             )
             return fixture_paths.readings_path.parent
+        if source_type == "smart-meters":
+            return self.settings.smart_meter_data_dir
         return self.settings.raw_data_dir
 
     def import_dataset(

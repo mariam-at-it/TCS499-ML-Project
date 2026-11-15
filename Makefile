@@ -2,7 +2,7 @@ API_DIR=api
 TRAINER_DIR=trainer
 WEB_DIR=web
 
-.PHONY: api-dev trainer-dev web-dev api-test trainer-test web-test test fixture-stack fixture-evaluate cer-dev-stack cer-download cer-dev-bootstrap
+.PHONY: api-dev trainer-dev web-dev api-test trainer-test web-test test fixture-stack fixture-evaluate cer-dev-stack cer-download cer-dev-bootstrap smart-meter-bootstrap
 
 api-dev:
 	cd $(API_DIR) && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -38,3 +38,6 @@ cer-download:
 
 cer-dev-bootstrap:
 	cd $(TRAINER_DIR) && APP_PROFILE=cer-dev uv run python -m trainer.cli.main bootstrap-cer --profile cer-dev
+
+smart-meter-bootstrap:
+	cd $(TRAINER_DIR) && APP_PROFILE=smart-meters uv run python -m trainer.cli.main bootstrap-smart-meters

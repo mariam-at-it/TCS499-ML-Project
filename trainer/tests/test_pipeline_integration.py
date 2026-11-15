@@ -13,6 +13,41 @@ from trainer.services.pipeline import PipelineService
 from trainer.weather.client import synthesize_weather
 
 
+def _write_smart_meter_dataset(base_dir: Path, *, households: int = 2, days: int = 21) -> Path:
+    dataset_dir = base_dir / "smart-meters"
+    halfhourly_dir = dataset_dir / "halfhourly_dataset" / "halfhourly_dataset"
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    halfhourly_dir.mkdir(parents=True, exist_ok=True)
+
+    metadata_rows = []
+    reading_rows = []
+    half_hourly = pd.date_range("2012-10-12T00:00:00Z", periods=days * 48, freq="30min", tz="UTC")
+    for index in range(households):
+        household_id = f"MAC{index + 1:06d}"
+        metadata_rows.append(
+            {
+                "LCLid": household_id,
+                "stdorToU": "Std" if index % 2 == 0 else "ToU",
+                "Acorn": f"ACORN-{chr(65 + index)}",
+                "Acorn_grouped": "Affluent" if index % 2 == 0 else "Comfortable",
+                "file": "block_0",
+            }
+        )
+        base_load = 0.20 + (index * 0.05)
+        for timestamp in half_hourly:
+            reading_rows.append(
+                {
+                    "LCLid": household_id,
+                    "tstp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                    "energy(kWh/hh)": f" {base_load:.3f} ",
+                }
+            )
+
+    pd.DataFrame(metadata_rows).to_csv(dataset_dir / "informations_households.csv", index=False)
+    pd.DataFrame(reading_rows).to_csv(halfhourly_dir / "block_0.csv", index=False)
+    return dataset_dir
+
+
 def test_fixture_pipeline_imports_trains_and_publishes(tmp_path, monkeypatch):
     db_path = tmp_path / "trainer.db"
     artifacts_dir = tmp_path / "artifacts"
@@ -249,5 +284,71 @@ def test_cer_dev_bootstrap_uses_raw_data_dir_and_invites_households(tmp_path, mo
 
         assert forecast_count == 2
         assert recommendation_count >= 2
+    finally:
+        get_settings.cache_clear()
+
+
+def test_smart_meter_bootstrap_uses_default_dataset_path_and_invites_households(tmp_path, monkeypatch):
+    db_path = tmp_path / "trainer-smart.db"
+    artifacts_dir = tmp_path / "artifacts"
+    smart_meter_dir = _write_smart_meter_dataset(tmp_path, households=2, days=21)
+
+    monkeypatch.setenv("TRAINER_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("APP_PROFILE", "smart-meters")
+    monkeypatch.setenv("SMART_METER_DATA_DIR", str(smart_meter_dir))
+    monkeypatch.setenv("ARTIFACTS_DIR", str(artifacts_dir))
+    get_settings.cache_clear()
+
+    try:
+        engine = create_engine(f"sqlite:///{db_path}", future=True)
+        schema.metadata.create_all(engine)
+
+        service = PipelineService()
+
+        def fake_fetch_archive(*, latitude: float, longitude: float, start: str, end: str):
+            _ = (latitude, longitude)
+            timestamps = pd.date_range(
+                start=f"{start}T00:00:00Z",
+                end=f"{end}T23:00:00Z",
+                freq="1h",
+                tz="UTC",
+            )
+            return synthesize_weather(pd.Series(timestamps))
+
+        monkeypatch.setattr(service.weather_client, "fetch_archive", fake_fetch_archive)
+
+        result = service.bootstrap_profile(
+            source_type="smart-meters",
+            profile="smart-meters",
+            sample_households=2,
+            run_config_overrides={
+                "rounds": 1,
+                "local_epochs": 1,
+                "batch_size": 16,
+                "learning_rate": 0.001,
+                "secure_aggregation_enabled": True,
+                "secure_aggregation_degree": 2,
+                "secure_aggregation_mask_scale": 4.0,
+                "dp_enabled": True,
+                "noise_multiplier": 1.1,
+                "clipping_norm": 1.0,
+            },
+        )
+
+        dataset = service.store.get_dataset_version(result["dataset_version_id"])
+        model = service.store.get_model_version(result["model_version_id"])
+        households = service.store.household_user_view()
+
+        assert dataset is not None
+        assert dataset["profile"] == "smart-meters"
+        assert dataset["source_type"] == "smart-meters"
+        assert dataset["import_manifest"]["source_format"] == "uk-smart-meter-halfhourly"
+        assert model is not None
+        assert model["state"] == "APPROVED"
+        assert model["published_at"] is not None
+        assert result["publication_result"]["household_snapshots"] == 2
+        assert all(row["email"].endswith("@demo.local") for row in households)
+        assert all(row["activation_token"] for row in households)
+        assert all(not row["is_active"] for row in households)
     finally:
         get_settings.cache_clear()

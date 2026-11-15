@@ -16,8 +16,8 @@ export function AdminDashboardPage() {
   const [rounds, setRounds] = useState<RoundMetric[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [importSourceType, setImportSourceType] = useState<"fixture" | "cer">("fixture");
-  const [importProfile, setImportProfile] = useState<"fixture" | "cer-dev" | "cer-full">("fixture");
+  const [importSourceType, setImportSourceType] = useState<"fixture" | "cer" | "smart-meters">("fixture");
+  const [importProfile, setImportProfile] = useState<"fixture" | "cer-dev" | "cer-full" | "smart-meters">("fixture");
   const [datasetPath, setDatasetPath] = useState("");
   const [sampleHouseholds, setSampleHouseholds] = useState("96");
   const [syntheticDays, setSyntheticDays] = useState("365");
@@ -110,22 +110,25 @@ export function AdminDashboardPage() {
               <select
                 value={importSourceType}
                 onChange={(event) => {
-                  const nextSource = event.target.value as "fixture" | "cer";
+                  const nextSource = event.target.value as "fixture" | "cer" | "smart-meters";
+                  const nextProfile = nextSource === "fixture" ? "fixture" : nextSource === "cer" ? "cer-dev" : "smart-meters";
                   setImportSourceType(nextSource);
-                  setImportProfile(nextSource === "fixture" ? "fixture" : "cer-dev");
+                  setImportProfile(nextProfile);
                 }}
               >
                 <option value="fixture">Synthetic dataset</option>
                 <option value="cer">CER dataset</option>
+                <option value="smart-meters">Smart meters dataset</option>
               </select>
             </label>
 
             <label>
               Runtime profile
-              <select value={importProfile} onChange={(event) => setImportProfile(event.target.value as "fixture" | "cer-dev" | "cer-full")}>
+              <select value={importProfile} onChange={(event) => setImportProfile(event.target.value as "fixture" | "cer-dev" | "cer-full" | "smart-meters")}>
                 {importSourceType === "fixture" ? <option value="fixture">fixture</option> : null}
                 {importSourceType === "cer" ? <option value="cer-dev">cer-dev</option> : null}
                 {importSourceType === "cer" ? <option value="cer-full">cer-full</option> : null}
+                {importSourceType === "smart-meters" ? <option value="smart-meters">smart-meters</option> : null}
               </select>
             </label>
 
@@ -136,13 +139,17 @@ export function AdminDashboardPage() {
               </label>
             ) : null}
 
-            {importSourceType === "cer" ? (
+            {importSourceType !== "fixture" ? (
               <label>
                 Dataset path on trainer
                 <input
                   value={datasetPath}
                   onChange={(event) => setDatasetPath(event.target.value)}
-                  placeholder="/workspace/data/raw or /workspace/data/raw/readings.csv"
+                  placeholder={
+                    importSourceType === "cer"
+                      ? "/workspace/data/raw or /workspace/data/raw/readings.csv"
+                      : "/workspace/data/artifacts/datasets/smart-meters"
+                  }
                 />
               </label>
             ) : null}
@@ -162,7 +169,9 @@ export function AdminDashboardPage() {
           <p className="muted-copy">
             {importSourceType === "cer"
               ? "Leave the dataset path blank to import from the trainer RAW_DATA_DIR mount. Provide a directory with readings.csv and optional households.csv, or point directly at readings.csv."
-              : "Synthetic imports now generate a larger, more realistic training dataset and automatically regenerate when you queue a new import."}
+              : importSourceType === "smart-meters"
+                ? "Leave the dataset path blank to import from the trainer SMART_METER_DATA_DIR path. The importer expects the London smart-meter dataset root with informations_households.csv and halfhourly_dataset/block files."
+                : "Synthetic imports now generate a larger, more realistic training dataset and automatically regenerate when you queue a new import."}
           </p>
         </div>
 

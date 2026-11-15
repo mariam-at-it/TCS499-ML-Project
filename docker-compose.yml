@@ -45,9 +45,11 @@ services:
     environment:
       TRAINER_DATABASE_URL: postgresql+psycopg://smart_energy:smart_energy@postgres:5432/smart_energy
       APP_PROFILE: ${APP_PROFILE:-fixture}
+      TRAINER_DEVICE: ${TRAINER_DEVICE:-auto}
       RAW_DATA_DIR: /workspace/data/raw
       FIXTURE_DATA_DIR: /workspace/data/fixture
       ARTIFACTS_DIR: /workspace/data/artifacts
+      SMART_METER_DATA_DIR: /workspace/data/artifacts/datasets/smart-meters
       OPENMETEO_BASE_URL: ${OPENMETEO_BASE_URL:-https://archive-api.open-meteo.com/v1/archive}
       OPENMETEO_FORECAST_URL: ${OPENMETEO_FORECAST_URL:-https://api.open-meteo.com/v1/forecast}
       ISSDA_DATAVERSE_API_KEY: ${ISSDA_DATAVERSE_API_KEY:-}
@@ -66,6 +68,7 @@ services:
       - fixture
       - cer-dev
       - cer-full
+      - smart-meters
 
   web:
     build:
@@ -78,6 +81,9 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    volumes:
+      - ./web/src:/workspace/web/src
+      - ./web/public:/workspace/web/public
 
 volumes:
   postgres_data:

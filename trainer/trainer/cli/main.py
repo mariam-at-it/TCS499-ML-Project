@@ -56,6 +56,23 @@ def main() -> None:
     bootstrap_cer.add_argument("--secure-aggregation-degree", type=int, default=2)
     bootstrap_cer.add_argument("--secure-aggregation-mask-scale", type=float, default=4.0)
     bootstrap_cer.add_argument("--no-dp", action="store_true")
+    bootstrap_smart = subparsers.add_parser(
+        "bootstrap-smart-meters",
+        help="Import smart meter data, sync weather, train, approve, and publish",
+    )
+    bootstrap_smart.add_argument("--dataset-path", type=Path, default=None)
+    bootstrap_smart.add_argument("--sample-households", type=int, default=12)
+    bootstrap_smart.add_argument("--weather-household-limit", type=int, default=None)
+    bootstrap_smart.add_argument("--rounds", type=int, default=5)
+    bootstrap_smart.add_argument("--local-epochs", type=int, default=2)
+    bootstrap_smart.add_argument("--batch-size", type=int, default=64)
+    bootstrap_smart.add_argument("--learning-rate", type=float, default=0.001)
+    bootstrap_smart.add_argument("--noise-multiplier", type=float, default=1.1)
+    bootstrap_smart.add_argument("--clipping-norm", type=float, default=1.0)
+    bootstrap_smart.add_argument("--no-secure-aggregation", action="store_true")
+    bootstrap_smart.add_argument("--secure-aggregation-degree", type=int, default=2)
+    bootstrap_smart.add_argument("--secure-aggregation-mask-scale", type=float, default=4.0)
+    bootstrap_smart.add_argument("--no-dp", action="store_true")
     args = parser.parse_args()
 
     service = PipelineService()
@@ -105,6 +122,27 @@ def main() -> None:
         result = service.bootstrap_profile(
             source_type="cer",
             profile=args.profile,
+            dataset_path=args.dataset_path,
+            sample_households=args.sample_households,
+            weather_household_limit=args.weather_household_limit,
+            run_config_overrides={
+                "rounds": args.rounds,
+                "local_epochs": args.local_epochs,
+                "batch_size": args.batch_size,
+                "learning_rate": args.learning_rate,
+                "secure_aggregation_enabled": not args.no_secure_aggregation,
+                "secure_aggregation_degree": args.secure_aggregation_degree,
+                "secure_aggregation_mask_scale": args.secure_aggregation_mask_scale,
+                "dp_enabled": not args.no_dp,
+                "noise_multiplier": args.noise_multiplier,
+                "clipping_norm": args.clipping_norm,
+            },
+        )
+        print(json.dumps(result, indent=2, default=str))
+    elif args.command == "bootstrap-smart-meters":
+        result = service.bootstrap_profile(
+            source_type="smart-meters",
+            profile="smart-meters",
             dataset_path=args.dataset_path,
             sample_households=args.sample_households,
             weather_household_limit=args.weather_household_limit,
