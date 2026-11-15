@@ -1,6 +1,80 @@
-# Federated Smart Energy Prototype
+# Privacy-Preserving Household Energy Forecasting with Federated Learning
 
-End-to-end monorepo for a privacy-preserving household energy forecasting prototype with:
+Forecasting a household's electricity use for the next 24 hours **without collecting every home's raw smart-meter data in one place**.
+
+Each household trains a shared forecasting model on its own data and sends only model updates. The server combines those updates with **secure aggregation**, so it sees only the sum and never an individual home's update. It then adds **differential privacy** noise, so the final model reveals as little as possible about any single home. Households see their forecasts and saving recommendations in a web dashboard. Administrators run and approve training from the same dashboard.
+
+## What I built
+
+| Part | Technology | What it does |
+|---|---|---|
+| **Trainer** | Python, PyTorch | Generates a realistic synthetic dataset (96 homes × 1 year, half-hourly), imports real smart-meter data, adds weather and calendar features, runs federated training with secure aggregation and differential privacy, and trains a centralized baseline for comparison |
+| **Model** | 2-layer LSTM (55,736 parameters) | Reads the last 168 hours (10 features per hour) and predicts the next 24 hours of consumption |
+| **API** | FastAPI, PostgreSQL, Alembic | JWT login with refresh-token rotation, password hashing, rate limiting, admin workflows, and a model registry (validate → approve → publish) |
+| **Dashboard** | React, TypeScript, Vite | Admin view for datasets, training runs, round metrics and models. Household view for history, forecasts and recommendations |
+| **Infrastructure** | Docker Compose (optional GPU) | Runs the whole stack with one command. Raw household data is mounted only into the trainer, never the API |
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph Homes["Households (clients)"]
+        H1["Home 1<br/>local LSTM training"]
+        H2["Home 2<br/>local LSTM training"]
+        H3["Home N<br/>local LSTM training"]
+    end
+    H1 -- "clipped, masked update" --> SA
+    H2 -- "clipped, masked update" --> SA
+    H3 -- "clipped, masked update" --> SA
+    SA["Secure aggregation<br/>(pairwise masks cancel in the sum)"] --> DP["Differential privacy<br/>(Gaussian noise, ε accounting)"]
+    DP --> G["Global model"]
+    G -- "next round" --> Homes
+    G --> REG["Model registry<br/>validate → approve → publish"]
+    REG --> API["FastAPI + PostgreSQL"]
+    API --> WEB["React dashboard"]
+```
+
+**Inputs per hour (10 features):** consumption, temperature, feels-like temperature, precipitation (from Open-Meteo), hour of day and day of week (sine/cosine encoded), weekend flag and Irish public-holiday flag.
+
+## Results
+
+All errors are in real kWh per forecasted hour. For all metrics, lower is better. ε is the differential-privacy budget (δ = 1e-5), where a smaller ε means stronger privacy.
+
+**Synthetic dataset (96 households, 1 year):**
+
+| Run | Privacy | Rounds | ε | Federated MAE | Centralized MAE |
+|---|---|---|---|---|---|
+| Tuned, no DP | Secure aggregation | 5 | ∞ | **0.315** | 0.219 |
+| Tuned, with DP | Secure aggregation + DP | 5 | 10.94 | 0.578 | 0.223 |
+| Evaluation, with DP | Secure aggregation + DP | 3 | 8.04 | 0.574 | 0.231 |
+
+**London smart-meter dataset (96 real households):** federated MAE 0.650 kWh vs. centralized 0.402 kWh, with secure aggregation and DP (ε ≈ 10.94), trained on GPU.
+
+**Takeaways**
+- Federated training converged steadily over the rounds and came within about 0.1 kWh of centralized training when no DP noise was added.
+- Adding differential privacy roughly doubled the error. That's the expected privacy–utility trade-off, and the main thing to improve next.
+- Secure aggregation cost no accuracy: the masks cancel exactly, with a maximum error of about 2e-10.
+
+## Honest limitations
+
+- Federated learning is **simulated**: all clients run inside one trainer process, not on separate devices over a network.
+- Secure aggregation is a prototype pairwise-masking scheme. It doesn't recover from clients dropping out mid-round.
+- Feature scaling statistics are computed over all clients' training data. A fully federated version would compute them with secure aggregation too.
+- Only one model architecture (LSTM) was studied. Full privacy–utility curves over a range of ε values are future work.
+
+## Repository guide
+
+- `trainer/`: data generation and import, preprocessing, model, federated training, privacy, publishing
+- `api/`: backend service and database migrations
+- `web/`: dashboard
+- `docs/`: project proposals, final report, and UML/use-case diagrams ([system class diagram](docs/diagrams/system-class-diagram.png))
+- Branch [`april-simulated-version`](../../tree/april-simulated-version): the earlier version using only the synthetic dataset
+
+---
+
+# Running the project
+
+This is an end-to-end monorepo for a privacy-preserving household energy forecasting prototype with:
 
 - `api`: FastAPI + PostgreSQL app for auth, admin workflows, dashboards, model registry, and snapshots
 - `trainer`: PyTorch federated training worker for dataset import, preprocessing, secure aggregation, DP accounting, weather sync, and publication
