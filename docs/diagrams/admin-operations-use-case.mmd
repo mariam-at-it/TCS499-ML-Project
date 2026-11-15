@@ -1,0 +1,31 @@
+flowchart LR
+    admin[Admin User]
+
+    subgraph system[Smart Energy Forecasting Platform]
+        login([Authenticate])
+        import_dataset([Generate or Import Dataset])
+        sync_weather([Synchronize Weather Data])
+        create_run([Create Federated Training Run])
+        inspect_runs([Inspect Training Runs])
+        inspect_rounds([Inspect Round Metrics])
+        validate_model([Validate Model])
+        approve_model([Approve Model])
+        publish_model([Publish Model])
+        manage_access([Manage Household Access])
+    end
+
+    admin --> login
+    admin --> import_dataset
+    admin --> sync_weather
+    admin --> create_run
+    admin --> inspect_runs
+    admin --> inspect_rounds
+    admin --> validate_model
+    admin --> approve_model
+    admin --> publish_model
+    admin --> manage_access
+
+    create_run --> inspect_runs
+    inspect_runs --> inspect_rounds
+    validate_model --> approve_model
+    approve_model --> publish_model

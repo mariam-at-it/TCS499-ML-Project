@@ -1,0 +1,22 @@
+flowchart LR
+    household[Household User]
+
+    subgraph system[Smart Energy Forecasting Platform]
+        activate([Activate Account])
+        login([Authenticate])
+        view_history([View Consumption History])
+        view_forecast([View 24-Hour Forecast])
+        view_recommendations([View Energy Recommendations])
+        refresh_session([Maintain Authenticated Session])
+    end
+
+    household --> activate
+    household --> login
+    household --> view_history
+    household --> view_forecast
+    household --> view_recommendations
+    household --> refresh_session
+
+    login --> view_history
+    login --> view_forecast
+    login --> view_recommendations

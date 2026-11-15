@@ -1,0 +1,9 @@
+{
+  "generator_version": "synthetic-v2",
+  "households": 96,
+  "days": 365,
+  "seed": 42,
+  "start_at": "2024-01-01T00:00:00+00:00",
+  "end_at": "2024-12-30T23:30:00+00:00",
+  "interval_minutes": 30
+}

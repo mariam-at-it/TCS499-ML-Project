@@ -1,0 +1,30 @@
+flowchart LR
+    admin[Admin User]
+    trainer[Trainer Service]
+    client[Federated Household Client]
+    weather[Weather Provider]
+
+    subgraph system[Training and Privacy Workflow]
+        prepare_data([Prepare Household Partitions])
+        enrich_weather([Enrich With Weather Features])
+        local_train([Train Local Client Model])
+        secure_aggregate([Apply Secure Aggregation])
+        apply_dp([Apply Differential Privacy])
+        aggregate_model([Update Global Model])
+        evaluate_fl([Evaluate Federated Model])
+        compare_baseline([Compare Centralized Baseline])
+        save_artifact([Store Model Artifact and Metrics])
+    end
+
+    admin --> prepare_data
+    trainer --> prepare_data
+    weather --> enrich_weather
+    prepare_data --> enrich_weather
+    enrich_weather --> local_train
+    client --> local_train
+    local_train --> secure_aggregate
+    secure_aggregate --> apply_dp
+    apply_dp --> aggregate_model
+    aggregate_model --> evaluate_fl
+    evaluate_fl --> compare_baseline
+    compare_baseline --> save_artifact

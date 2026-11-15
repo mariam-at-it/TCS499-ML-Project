@@ -1,0 +1,214 @@
+classDiagram
+direction LR
+
+class AdminUser {
+    <<actor>>
+    +authenticate()
+    +queueDatasetImport()
+    +createTrainingRun()
+    +inspectMetrics()
+    +validateModel()
+    +approveModel()
+    +publishModel()
+}
+
+class HouseholdUser {
+    <<actor>>
+    +activateAccount()
+    +authenticate()
+    +viewHistory()
+    +viewForecast()
+    +viewRecommendations()
+}
+
+class WebDashboard {
+    +renderAdminDashboard()
+    +renderHouseholdDashboard()
+    +callBackendApi()
+}
+
+class BackendAPI {
+    +authenticateUser()
+    +authorizeRole()
+    +createJob()
+    +createTrainingRun()
+    +cancelTrainingRun()
+    +serveHouseholdSnapshots()
+    +manageModelLifecycle()
+}
+
+class TrainerService {
+    +generateSyntheticDataset()
+    +importDataset()
+    +syncWeather()
+    +prepareClientPartitions()
+    +runFederatedTraining()
+    +publishModelSnapshots()
+}
+
+class Database {
+    +persistUsers()
+    +persistJobs()
+    +persistTrainingRuns()
+    +persistModels()
+    +persistSnapshots()
+}
+
+class User {
+    +int id
+    +string email
+    +string fullName
+    +UserRole role
+    +bool isActive
+}
+
+class UserSession {
+    +int id
+    +string refreshJti
+    +string tokenFamily
+    +datetime expiresAt
+    +datetime revokedAt
+}
+
+class Household {
+    +int id
+    +string householdCode
+    +string displayName
+    +string regionCode
+    +json metadata
+}
+
+class DatasetVersion {
+    +int id
+    +string sourceType
+    +string profile
+    +DatasetStatus status
+    +json importManifest
+    +int householdCount
+}
+
+class Job {
+    +int id
+    +JobType jobType
+    +JobStatus status
+    +json payload
+    +json result
+}
+
+class TrainingRun {
+    +int id
+    +RunStatus status
+    +json config
+    +json metricsSummary
+    +json privacySummary
+}
+
+class TrainingRoundMetric {
+    +int roundNumber
+    +json metrics
+    +int participantCount
+    +float durationSeconds
+}
+
+class ModelVersion {
+    +int id
+    +string versionLabel
+    +ModelState state
+    +json metrics
+    +json privacyBudget
+    +json artifactManifest
+}
+
+class HouseholdSummarySnapshot {
+    +datetime issuedAt
+    +datetime startAt
+    +datetime endAt
+    +json history
+}
+
+class ForecastSnapshot {
+    +datetime horizonStart
+    +datetime horizonEnd
+    +json forecast
+    +json context
+}
+
+class RecommendationSnapshot {
+    +string code
+    +string severity
+    +json evidence
+    +string message
+}
+
+class FederatedClient {
+    +int householdId
+    +array trainX
+    +array trainY
+    +trainLocalModel()
+    +returnModelUpdate()
+}
+
+class MultiOutputLSTM {
+    +int inputHours = 168
+    +int forecastHorizon = 24
+    +int hiddenSize = 64
+    +forward()
+}
+
+class SecureAggregator {
+    +maskClientUpdates()
+    +aggregateMaskedUpdates()
+    +verifyMaskCancellation()
+}
+
+class DifferentialPrivacyAccountant {
+    +clipClientUpdates()
+    +addGaussianNoise()
+    +computeEpsilon()
+}
+
+class WeatherProvider {
+    <<external>>
+    +fetchHistoricalWeather()
+    +fetchForecastWeather()
+}
+
+AdminUser --> WebDashboard : uses
+HouseholdUser --> WebDashboard : uses
+WebDashboard --> BackendAPI : REST API calls
+BackendAPI --> Database : reads and writes
+TrainerService --> Database : consumes jobs and writes results
+TrainerService --> WeatherProvider : requests weather data
+
+User <|-- AdminUser
+User <|-- HouseholdUser
+User "1" --> "0..*" UserSession : owns
+HouseholdUser "1" --> "1" Household : assigned to
+Household "1" --> "0..1" User : account
+
+Database *-- User
+Database *-- UserSession
+Database *-- Household
+Database *-- DatasetVersion
+Database *-- Job
+Database *-- TrainingRun
+Database *-- ModelVersion
+
+DatasetVersion "1" --> "1..*" Household : includes
+TrainingRun "1" --> "1" DatasetVersion : trains on
+TrainingRun "1" *-- "1..*" TrainingRoundMetric : records
+TrainingRun "1" --> "0..1" ModelVersion : produces
+ModelVersion "1" --> "0..*" HouseholdSummarySnapshot : publishes
+ModelVersion "1" --> "0..*" ForecastSnapshot : publishes
+ModelVersion "1" --> "0..*" RecommendationSnapshot : publishes
+Household "1" --> "0..*" HouseholdSummarySnapshot
+Household "1" --> "0..*" ForecastSnapshot
+Household "1" --> "0..*" RecommendationSnapshot
+
+TrainerService --> FederatedClient : orchestrates
+FederatedClient --> MultiOutputLSTM : trains local copy
+TrainerService --> MultiOutputLSTM : maintains global model
+TrainerService --> SecureAggregator : protects updates
+TrainerService --> DifferentialPrivacyAccountant : applies DP
+SecureAggregator --> FederatedClient : masks updates
+DifferentialPrivacyAccountant --> FederatedClient : clips/noises updates

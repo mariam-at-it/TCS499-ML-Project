@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-smart_energy}
+      POSTGRES_USER: ${POSTGRES_USER:-smart_energy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smart_energy}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smart_energy} -d ${POSTGRES_DB:-smart_energy}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://smart_energy:smart_energy@postgres:5432/smart_energy
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-change-me-change-me-32b}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_MINUTES: ${REFRESH_TOKEN_EXPIRE_MINUTES:-1440}
+      APP_PROFILE: ${APP_PROFILE:-fixture}
+      CORS_ORIGINS: http://localhost:${WEB_PORT:-5173}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  trainer:
+    build:
+      context: .
+      dockerfile: infra/trainer.Dockerfile
+    environment:
+      TRAINER_DATABASE_URL: postgresql+psycopg://smart_energy:smart_energy@postgres:5432/smart_energy
+      APP_PROFILE: ${APP_PROFILE:-fixture}
+      RAW_DATA_DIR: /workspace/data/raw
+      FIXTURE_DATA_DIR: /workspace/data/fixture
+      ARTIFACTS_DIR: /workspace/data/artifacts
+      OPENMETEO_BASE_URL: ${OPENMETEO_BASE_URL:-https://archive-api.open-meteo.com/v1/archive}
+      OPENMETEO_FORECAST_URL: ${OPENMETEO_FORECAST_URL:-https://api.open-meteo.com/v1/forecast}
+      ISSDA_DATAVERSE_API_KEY: ${ISSDA_DATAVERSE_API_KEY:-}
+      TRAINER_POLL_INTERVAL_SECONDS: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - ./trainer/trainer:/workspace/trainer/trainer
+      - ${RAW_DATA_DIR:-./data/raw}:/workspace/data/raw:ro
+      - ${FIXTURE_DATA_DIR:-./data/fixture}:/workspace/data/fixture
+      - ${ARTIFACTS_DIR:-./data/artifacts}:/workspace/data/artifacts
+    profiles:
+      - fixture
+      - cer-dev
+      - cer-full
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/web.Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:${API_PORT:-8000}
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
